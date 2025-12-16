@@ -17,6 +17,9 @@ from selenium.webdriver.chrome.options import Options
 from loguru import logger
 import time
 import ddddocr
+import yaml
+
+from ultralytics import YOLO
 
 logger.add("app.log", format="{time:YYYY-MM-DD at HH:mm:ss} | {level} | {message}")
 
@@ -52,27 +55,40 @@ def save_data_url_image(data_url, filename):
 
 class CourseScript():
 
-    def __init__(self, driver_path=None, debug_port=None, mode="auto"):
+    def __init__(self, cfg_path, mode="auto"):
 
-        if driver_path is None:
-            driver_path = r"./chromedriver-win64/chromedriver.exe"
-        if debug_port is None:
-            debug_port = 9222
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+        self.driver_path = cfg["driver_path"]
+        self.debug_port = cfg["debug_port"]
+        self.username = cfg["username"]
+        self.password = cfg["password"]
+
         # 初始化
         logger.info("正在初始化")
         chrome_options = Options()
-        service = ChromeService(executable_path=driver_path)
+        service = ChromeService(executable_path=self.driver_path)
         # chrome_options.add_experimental_option("debuggerAddress", "localhost:{}".format(debug_port))
-        # chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 
         self.driver = webdriver.Chrome(options=chrome_options, service=service)
+        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+            Object.defineProperty(navigator, 'webdriver', {
+              get: () => undefined
+            })
+          """
+        })
         self.action = ActionChains(self.driver)
         self.wait = WebDriverWait(self.driver, 10)
         # 创建 Chrome WebDriver 实例
         # chrome.exe --remote-debugging-port=9222 --user-data-dir="D:\JetBrains\PyCharmProjects\course_script\temp"
         # netstat -ano|findstr "9222"
         self.ddddocr = ddddocr.DdddOcr(det=False, ocr=False, show_ad=False)
+        self.piece_detector = YOLO(cfg["det_model_path"])
+
         self.driver.get("https://pc.kmelearning.com/jsncxyslhs/home/login")
         self.driver.refresh()
 
@@ -95,9 +111,9 @@ class CourseScript():
         if not self.driver.current_url.endswith("login"):
             return
         if username_str is None:
-            username_str = "32083020020816127X"
+            username_str = self.username
         if password_str is None:
-            password_str = "zycxmm16127X"
+            password_str = self.password
         self.wait.until(
             EC.presence_of_element_located((By.ID, "login-box"))
         )
@@ -142,7 +158,7 @@ class CourseScript():
                     logger.success("滑块验证通过")
                     break
 
-    def get_slide_distance(self, save_img=True):
+    def get_slide_distance(self, save_img=True, mode="det"):
         # 获取图片
         slider_img = WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located((By.ID, "aliyunCaptcha-puzzle"))
@@ -159,13 +175,19 @@ class CourseScript():
         background_png_save_path = "background.png"
         save_data_url_image(slider_url, slider_png_save_path)
         save_data_url_image(background_url, background_png_save_path)
-        slider = open("slider.png", "rb").read()
-        background = open("background.png", "rb").read()
-        res = self.ddddocr.slide_match(slider, background, simple_target=False)
-        distance = res["target"][0]
-        return distance
+
+        if mode == "det":
+            res = self.piece_detector.predict(background_png_save_path)
+            x = int(res[0].boxes.xyxy[0][0])
+            return x
+        elif mode == "canny":
+            slider = open("slider.png", "rb").read()
+            background = open("background.png", "rb").read()
+            res = self.ddddocr.slide_match(slider, background, simple_target=False)
+            return res["target"][0]
 
     def human_drag(self, distance, slider):
+        logger.info("距离为：{}".format(distance))
         self.driver.implicitly_wait(4)
 
         # 点击并按住滑块
@@ -316,5 +338,5 @@ class CourseScript():
 
 
 if __name__ == '__main__':
-    script = CourseScript()
+    script = CourseScript(cfg_path="cfg.yaml")
     script.start()

@@ -1,4 +1,5 @@
-username: 32083020020816127X
-password: zycxmm16127X
-debug_port: debug_port
+username: xx
+password: xx
+debug_port: 9222
 driver_path: ./chromedriver-win64/chromedriver.exe
+det_model_path: ./best.pt
