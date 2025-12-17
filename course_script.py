@@ -1,61 +1,28 @@
-import base64
 import os
 import random
+import subprocess
 import sys
-import re
-import cv2
-import requests
 from selenium import webdriver
-from selenium import common
 from selenium.webdriver import ActionChains
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from loguru import logger
+from ultralytics import YOLO
+
 import time
 import ddddocr
 import yaml
+import utils
 
-from ultralytics import YOLO
+logger = utils.logger
 
-logger.add("app.log", format="{time:YYYY-MM-DD at HH:mm:ss} | {level} | {message}")
-
-
-def delayed_input(ele, text, interval=0.1):
-    ele.send_keys(Keys.CONTROL + 'a')  # 全选
-    ele.send_keys(Keys.BACKSPACE)  # 删除
-    for word in text:
-        ele.send_keys(word)
-        time.sleep(random.randint(int(interval * 500), int(interval * 1500)) / 1000)
-
-
-def save_data_url_image(data_url, filename):
-    try:
-        if 'base64,' in data_url:
-            # 分离出 base64 部分
-            base64_data = data_url.split('base64,')[1]
-            # 解码并保存
-            image_data = base64.b64decode(base64_data)
-            with open(filename, 'wb') as f:
-                f.write(image_data)
-        else:
-            response = requests.get(data_url)
-            with open(filename, 'wb') as f:
-                f.write(response.content)
-
-        logger.info("图片保存成功：{}".format(filename))
-    except Exception as e:
-        logger.error(str(e))
-        logger.error("图片保存失败：{}".format(filename))
-        sys.exit(1)
 
 
 class CourseScript():
 
-    def __init__(self, cfg_path, mode="auto"):
+    def __init__(self, cfg_path, open_browser=True, login=True):
 
         with open(cfg_path, 'r', encoding='utf-8') as f:
             cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
@@ -67,10 +34,13 @@ class CourseScript():
 
         # 初始化
         logger.info("正在初始化")
+
+        if open_browser is False:
+            utils.start_debug_browser(debug_port=self.debug_port)
         chrome_options = Options()
         service = ChromeService(executable_path=self.driver_path)
-        # chrome_options.add_experimental_option("debuggerAddress", "localhost:{}".format(debug_port))
-        chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        chrome_options.add_experimental_option("debuggerAddress", "localhost:{}".format(self.debug_port))
+        # chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 
         self.driver = webdriver.Chrome(options=chrome_options, service=service)
@@ -81,47 +51,46 @@ class CourseScript():
             })
           """
         })
-        self.action = ActionChains(self.driver)
-        self.wait = WebDriverWait(self.driver, 10)
-        # 创建 Chrome WebDriver 实例
-        # chrome.exe --remote-debugging-port=9222 --user-data-dir="D:\JetBrains\PyCharmProjects\course_script\temp"
-        # netstat -ano|findstr "9222"
         self.ddddocr = ddddocr.DdddOcr(det=False, ocr=False, show_ad=False)
         self.piece_detector = YOLO(cfg["det_model_path"])
+        self.action = ActionChains(self.driver)
+        self.wait = WebDriverWait(self.driver, 10)
 
-        self.driver.get("https://pc.kmelearning.com/jsncxyslhs/home/login")
-        self.driver.refresh()
-
-        init_wait_time = 10
-        while True:
-            try:
-                self.driver.implicitly_wait(init_wait_time)
-                logger.info("初始化完成")
-                break
-            except Exception:
-                logger.error("页面加载超时，尝试重新加载，预计等待时长：{}".format(init_wait_time))
+        if open_browser is True:
+            for window in self.driver.window_handles:
+                self.driver.switch_to.window(window)
+                if self.driver.current_url.startswith("https://pc.kmelearning.com/jsncxyslhs"):
+                    continue
+                else:
+                    self.driver.close()
+            if login is True:
                 self.driver.refresh()
-                init_wait_time = 5 + init_wait_time
-
-        if mode == "auto":
+                init_wait_time = 10
+                while True:
+                    try:
+                        self.driver.implicitly_wait(init_wait_time)
+                        logger.info("初始化完成")
+                        break
+                    except Exception:
+                        logger.error("页面加载超时，尝试重新加载，预计等待时长：{}".format(init_wait_time))
+                        self.driver.refresh()
+                        init_wait_time = 5 + init_wait_time
+            else:
+                self.login()
+        else:
             self.login()
 
-    def login(self, username_str=None, password_str=None):
+    def login(self):
 
-        if not self.driver.current_url.endswith("login"):
-            return
-        if username_str is None:
-            username_str = self.username
-        if password_str is None:
-            password_str = self.password
+        self.driver.get("https://pc.kmelearning.com/jsncxyslhs/home/login")
         self.wait.until(
             EC.presence_of_element_located((By.ID, "login-box"))
         )
         username = self.driver.find_element(By.ID, "1")
-        delayed_input(username, username_str)
+        utils.delayed_input(username, self.username)
         logger.info("账号输入完成")
         password = self.driver.find_element(By.ID, "2")
-        delayed_input(password, password_str)
+        utils.delayed_input(password, self.password)
         logger.info("密码输入完成")
         agreement = self.driver.find_element(By.CLASS_NAME, "ant-checkbox-input")
         if not agreement.is_selected():
@@ -173,8 +142,8 @@ class CourseScript():
 
         slider_png_save_path = "slider.png"
         background_png_save_path = "background.png"
-        save_data_url_image(slider_url, slider_png_save_path)
-        save_data_url_image(background_url, background_png_save_path)
+        utils.save_data_url_image(slider_url, slider_png_save_path)
+        utils.save_data_url_image(background_url, background_png_save_path)
 
         if mode == "det":
             res = self.piece_detector.predict(background_png_save_path)
@@ -338,5 +307,5 @@ class CourseScript():
 
 
 if __name__ == '__main__':
-    script = CourseScript(cfg_path="cfg.yaml")
+    script = CourseScript(cfg_path="cfg.yaml", open_browser=True, login=True)
     script.start()
